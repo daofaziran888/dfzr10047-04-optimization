@@ -14,6 +14,7 @@
 │   ├── src/data/modules.ts              18个业务模块配置
 │   ├── src/api/              统一请求封装
 │   └── vite.config.ts        dev server 配置（open: false）
+├── frontend/src/views/DeviationRepairView.vue  偏差修复确认页（分来源分组）
 ├── backend/                  FastAPI（Python） 后端
 │   ├── app/routers/resource.py  通用查询/导出/登记/动作接口
 │   ├── app/services/<key>.py    每个模块独立领域逻辑
@@ -69,6 +70,8 @@ npm run dev
 | 重解析任务 | `reparse_task` | 重解析单 | 重解析编号、关联批次、重解析原因 |
 | 重复指纹 | `dup_fingerprint` | 指纹记录 | 指纹编号、关联批次、内容指纹 |
 | 抽样复核 | `sample_review` | 复核样本 | 样本编号、关联批次、抽样比例 |
+| 偏差修复 | `deviation_repair` | 修复申请 | 申请编号、可修复来源、证据不足来源、复验单号 |
+| 来源复验单 | `source_recheck` | 复验单 | 复验单号、签发范围、补样来源、实际入队渠道 |
 | 解析指标 | `parse_metric` | 指标读数 | 指标读数编号、统计窗口、来源渠道 |
 | 模板差异 | `tmpl_diff` | 差异条目 | 差异编号、旧模板版本、新模板版本 |
 | 投递审计 | `intake_audit` | 审计条目 | 审计编号、关联对象、操作类型 |
@@ -79,6 +82,10 @@ npm run dev
 - 每个模块仍保留独立`backend/app/services/<模块>.py`；纯前端保留
   `frontend/src/domain/<模块>.ts`，用于承载真实业务差异并维持36题位容量。
 - 列表接口统一返回 `{ items, total, page, size }`，动作接口统一返回 `{ ok, message }`。
+- 偏差修复确认页：`GET /api/deviation_repair/{申请编号}/detail`，按来源分组返回
+  证据不足/可发起修复/偏差未超阈三组；补样、签发、执行、历史回查各有独立接口
+  （`samples`、`late-samples`、`confirm`、`recheck`、`late-source`、`execute`、
+  `sample-update`、`acknowledge`、`contract-sync`、`history`）。
 - 状态流转只允许在 `app/services` 里改，路由层不做业务判断。
 
 领域：数据工程

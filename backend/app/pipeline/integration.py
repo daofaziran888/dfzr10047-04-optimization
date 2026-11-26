@@ -11,11 +11,14 @@
 8. 解析水位(全部批次闭合才推进)→重解析覆盖策略(旧投递保留 vs 被替代)
 9. 解析指标结算(隔离率来自坏行隔离真实计数、回退率来自解析路由真实回退)
 10. 解析路由首选失败→备选回退→回退成功进入字段解析 / 耗尽判定路由失败
+11. 抽样复核偏差→分来源受理范围(有效样本为分母、缺样单列)→来源复验单→按来源重解析批次
+11. 抽样复核偏差→分来源受理范围(有效样本为分母、缺样单列)→来源复验单→按来源重解析批次
 """
 from __future__ import annotations
 
 from typing import Any, Callable
 
+from app.pipeline.deviation_scope import group_verdicts, tally_source
 from app.pipeline.format_probe_chain import FormatProbeChain
 from app.pipeline.parser_route_engine import ParserRouteEngine
 from app.pipeline.field_parse_engine import FieldParseEngine
@@ -659,6 +662,96 @@ class ParsePipelineOrchestrator:
                 "fallback_count": decision.fallback_count,
                 "success_rows": success,
                 "message": msg}
+
+    # ------------------------------------------------------------------
+    # 链路11：分来源偏差复核→确认受理范围→来源复验单→按来源重解析批次
+    # ------------------------------------------------------------------
+    def link11_source_scope_recheck(
+        self, claim_no: str, sources: list[dict[str, Any]],
+        required_samples: int, deviation_threshold: float,
+        channel_by_source: dict[str, str], review_time: str,
+        reparse_by_source: dict[str, tuple[str, str]] | None = None,
+    ) -> dict[str, Any]:
+        """按来源核对受理范围并把确证偏差来源落成按来源重解析批次。
+
+        sources 每个元素包含 source/samples，samples 是样本回执明细。
+        每个来源各自用自己的有效样本作分母；缺样单列、重复回执只算一次。
+        """
+        link = "source-scope-recheck"
+        tallies = [
+            tally_source(
+                str(source["source"]),
+                source.get("samples", []),
+                required_samples=required_samples,
+                deviation_threshold=deviation_threshold,
+                channel=channel_by_source.get(str(source["source"]), ""),
+            )
+            for source in sources
+        ]
+        groups = group_verdicts(tallies)
+        self._log(link, "acceptance_scope", (
+            f"repairable={[t['来源标识'] for t in groups['可发起修复来源']]} "
+            f"insufficient={[t['来源标识'] for t in groups['证据不足来源']]}"))
+
+        confirmed = groups["可发起修复来源"]
+        created: list[dict[str, Any]] = []
+        positions = reparse_by_source or {}
+        for index, tally in enumerate(confirmed, start=1):
+            task_no = f"RT-SRC-{claim_no}-{index:02d}"
+            start, end = positions.get(tally["来源标识"], ("", ""))
+            _append_row("reparse_task", {
+                "重解析编号": task_no,
+                "关联批次": tally["来源标识"],
+                "重解析原因": f"分来源偏差复核:{claim_no}",
+                "覆盖策略": "旧投递保留",
+                "起始位点": start,
+                "截止位点": end,
+                "受影响投递数": "1",
+                "受影响批次": tally["来源标识"],
+                "来源标识": tally["来源标识"],
+                "来源渠道": tally.get("来源渠道", ""),
+                "偏差比例": tally.get("偏差比例", ""),
+                "偏差阈值": tally.get("偏差阈值", ""),
+                "重解析范围": (
+                    f"仅重解析来源 {tally['来源标识']} 的偏差样本 "
+                    f"{tally.get('偏差样本', '') or '无'}"
+                ),
+            }, status="待执行", pending=True)
+            created.append({
+                "重解析编号": task_no,
+                "来源标识": tally["来源标识"],
+                "来源渠道": tally.get("来源渠道", ""),
+                "偏差比例": tally.get("偏差比例", ""),
+            })
+        self._log(link, "reparse_by_source",
+                  f"created={[task['重解析编号'] for task in created]}")
+
+        gaps = []
+        for tally in tallies:
+            if tally.get("确证偏差"):
+                continue
+            gaps.append({
+                "来源标识": tally["来源标识"],
+                "受理结论": tally["受理结论"],
+                "覆盖缺口": (
+                    f"{tally['受理结论']}："
+                    f"{tally.get('不可受理原因') or '偏差未超阈，不纳入重解析范围'}"
+                ),
+            })
+        return {
+            "link": link,
+            "ok": bool(confirmed),
+            "claim": claim_no,
+            "groups": groups,
+            "confirmed_sources": [t["来源标识"] for t in confirmed],
+            "reparse_batches": created,
+            "coverage_gaps": gaps,
+            "message": (
+                f"申请 {claim_no} 按来源核对完成：可发起修复 "
+                f"{[t['来源标识'] for t in confirmed] or '无'}，"
+                f"证据不足 {[t['来源标识'] for t in groups['证据不足来源']] or '无'}"
+            ),
+        }
 
     # ------------------------------------------------------------------
     def status_report(self) -> dict[str, Any]:

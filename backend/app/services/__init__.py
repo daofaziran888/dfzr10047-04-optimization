@@ -24,6 +24,8 @@ from app.services.sample_review import SampleReviewService
 from app.services.parse_metric import ParseMetricService
 from app.services.tmpl_diff import TmplDiffService
 from app.services.intake_audit import IntakeAuditService
+from app.services.deviation_repair import DeviationRepairService
+from app.services.source_recheck import SourceRecheckService
 
 SERVICES: dict[str, BaseModuleService] = {
     "file_intake": FileIntakeService(),
@@ -48,6 +50,8 @@ SERVICES: dict[str, BaseModuleService] = {
     "parse_metric": ParseMetricService(),
     "tmpl_diff": TmplDiffService(),
     "intake_audit": IntakeAuditService(),
+    "deviation_repair": DeviationRepairService(),
+    "source_recheck": SourceRecheckService(),
 }
 
 

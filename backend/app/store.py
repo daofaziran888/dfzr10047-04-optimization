@@ -4,6 +4,7 @@
 """
 from __future__ import annotations
 
+import copy
 from typing import Any
 
 from app.seed import SEED_ROWS
@@ -11,18 +12,22 @@ from app.seed import SEED_ROWS
 
 class Store:
     def __init__(self) -> None:
-        self._tables: dict[str, list[dict[str, Any]]] = {
-            name: [dict(row) for row in rows] for name, rows in SEED_ROWS.items()
-        }
+        self._tables = self._seed_tables()
 
     def module_names(self) -> list[str]:
         return sorted(self._tables)
 
+    @staticmethod
+    def _seed_tables() -> dict[str, list[dict[str, Any]]]:
+        """深拷贝示例数据：行内还有来源明细、复核历史等嵌套结构，浅拷贝会写回种子。"""
+        return {
+            name: [copy.deepcopy(row) for row in rows]
+            for name, rows in SEED_ROWS.items()
+        }
+
     def reload_seed(self) -> None:
         """把全部表恢复成 seed.py 的初始示例数据，供本地重置与测试隔离使用。"""
-        self._tables = {
-            name: [dict(row) for row in rows] for name, rows in SEED_ROWS.items()
-        }
+        self._tables = self._seed_tables()
 
     def rows(self, module: str) -> list[dict[str, Any]]:
         return self._tables.setdefault(module, [])

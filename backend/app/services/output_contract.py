@@ -138,6 +138,117 @@ class OutputContractService(BaseModuleService):
             return True, ["契约已通过，保留原校验结论不重复校验"], dict(contract)
         return self.validate_batch(contract_no, actual_columns, actual_rows, check_time)
 
+    def sync_deviation_review(self, claim_no: str) -> dict[str, Any]:
+        """承接偏差复核结论：把实际样本结论写进契约，并汇总按来源重解析范围。
+
+        这里只读取偏差修复申请已经核出的真实样本结论，不重新估算：
+        确证偏差的来源进入重解析范围，证据不足来源单列为覆盖缺口。
+        """
+        from app.services.deviation_repair import DeviationRepairService
+
+        repair = DeviationRepairService()
+        claim = repair.claim_by_no(claim_no)
+        if claim is None:
+            return {"ok": False, "message": f"偏差修复申请 {claim_no} 不存在",
+                    "contracts": [], "sources": []}
+
+        tallies = repair.tallies_for(claim)
+        source_rows: list[dict[str, Any]] = []
+        confirmed_sources: list[str] = []
+        gap_sources: list[str] = []
+        for source_id, tally in tallies.items():
+            included = bool(tally.get("确证偏差"))
+            if included:
+                confirmed_sources.append(source_id)
+            else:
+                gap_sources.append(source_id)
+            source_rows.append({
+                "来源标识": source_id,
+                "来源渠道": tally.get("来源渠道", ""),
+                "有效样本数": tally.get("有效样本数", "0"),
+                "偏差数": tally.get("偏差数", "0"),
+                "偏差比例": tally.get("偏差比例", "0"),
+                "偏差阈值": tally.get("偏差阈值", ""),
+                "受理结论": tally.get("受理结论", ""),
+                "纳入重解析": included,
+                "覆盖缺口": "" if included else (
+                    tally.get("不可受理原因") or "偏差未超阈，不纳入重解析范围"
+                ),
+            })
+
+        contracts: list[dict[str, Any]] = []
+        for source in repair.sources_of(claim):
+            source_id = source["来源标识"]
+            tally = tallies[source_id]
+            for intake_batch in repair.source_batches(source):
+                contract = next(
+                    (c for c in store.rows(self.MODULE)
+                     if self._contract_batch(c) == intake_batch), None)
+                if contract is not None:
+                    contract["偏差结论同步"] = (
+                        f"{source_id} {tally.get('偏差数')}/{tally.get('有效样本数')}"
+                        f"（阈值 {tally.get('偏差阈值')}）"
+                    )
+                    if tally.get("确证偏差"):
+                        marked = [
+                            s for s in str(contract.get("重解析来源") or "").split(",")
+                            if s
+                        ]
+                        if source_id not in marked:
+                            marked.append(source_id)
+                        contract["重解析来源"] = ",".join(marked)
+                contracts.append({
+                    "来源标识": source_id,
+                    "关联投递批次": intake_batch,
+                    "契约编号": contract.get("契约编号") if contract else "",
+                    "纳入重解析": bool(tally.get("确证偏差")),
+                })
+
+        message = (
+            f"申请 {claim_no} 复核结论已同步：{len(confirmed_sources)} 个来源确证偏差，"
+            f"{len(gap_sources)} 个来源存在覆盖缺口"
+        )
+        return {
+            "ok": True,
+            "message": message,
+            "claim": claim_no,
+            "sources": source_rows,
+            "confirmed_sources": confirmed_sources,
+            "gap_sources": gap_sources,
+            "contracts": contracts,
+            "reparse_scope": (
+                f"仅覆盖确证偏差来源 {','.join(confirmed_sources)}"
+                if confirmed_sources else "无确证偏差来源，不扩大重解析范围"
+            ),
+        }
+
+        message = (
+            f"申请 {claim_no} 复核结论已同步：{len(confirmed_sources)} 个来源确证偏差，"
+            f"{len(gap_sources)} 个来源存在覆盖缺口"
+        )
+        return {
+            "ok": True,
+            "message": message,
+            "claim": claim_no,
+            "sources": source_rows,
+            "confirmed_sources": confirmed_sources,
+            "gap_sources": gap_sources,
+            "contracts": contracts,
+            "reparse_scope": (
+                f"仅覆盖确证偏差来源 {','.join(confirmed_sources)}"
+                if confirmed_sources else "无确证偏差来源，不扩大重解析范围"
+            ),
+        }
+
+    @staticmethod
+    def _contract_batch(contract: dict[str, Any]) -> str:
+        """契约关联批次可能是批次记录编号，这里还原成投递批次编号。"""
+        raw = str(contract.get("关联批次") or "")
+        for batch in store.rows("parse_batch"):
+            if str(batch.get("批次记录编号")) == raw:
+                return str(batch.get("关联投递批次") or raw)
+        return raw
+
     def pass_ratio(self) -> float:
         """契约通过率：已通过 / 全部契约条目。"""
         rows = store.rows(self.MODULE)
